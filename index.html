@@ -127,6 +127,13 @@
   .cfgsec{grid-column:1/-1}
   .cfgsec h4{margin:4px 0 8px;font-size:12px;color:var(--navy);text-transform:uppercase;letter-spacing:.4px}
   .err{color:var(--crit);font-size:12px;min-height:16px}
+  #gate{position:fixed;inset:0;background:var(--navy);display:none;align-items:center;justify-content:center;z-index:50;padding:20px}
+  #gate.show{display:flex}
+  #gate .box{background:#fff;border-radius:12px;padding:28px 28px 22px;width:min(360px,100%);box-shadow:0 20px 50px rgba(0,0,0,.3)}
+  #gate h2{margin:0 0 4px;font-size:18px;color:var(--navy)}
+  #gate p{margin:0 0 16px;color:var(--muted);font-size:12px}
+  #gate input{width:100%;font:inherit;font-size:18px;letter-spacing:4px;text-align:center;padding:10px;border:1px solid #CBD2DA;border-radius:8px}
+  #gate button{width:100%;margin-top:12px;background:var(--navy);color:#fff;border:none;border-radius:8px;padding:10px;font-size:14px;font-weight:600;cursor:pointer}
   .toast{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);background:var(--navy);color:#fff;padding:8px 14px;border-radius:6px;font-size:12px;opacity:0;transition:opacity .2s;pointer-events:none;z-index:30}
   .toast.show{opacity:1}
 </style>
@@ -143,6 +150,7 @@
   <button class="hbtn primary rw-only" id="newBtn">+ Nueva tarea</button>
   <button class="hbtn rw-only" id="lockBtn" title="Volver a solo lectura">🔒 Bloquear</button>
   <button class="hbtn primary ro-only" id="unlockBtn">✎ Editar</button>
+  <button class="hbtn ro-only" id="logoutBtn" title="Cerrar sesión">Salir</button>
 </header>
 
 <div class="bar">
@@ -250,6 +258,13 @@
   <div class="mf"><div class="sp"></div><button class="b" id="codeCancel">Cancelar</button><button class="b pri" id="codeOk">Entrar</button></div>
 </div></div>
 
+<div id="gate"><div class="box">
+  <h2>Calendario UX · Handy</h2>
+  <p>Ingresá el código de acceso para ver el calendario.</p>
+  <input type="password" id="gateIn" inputmode="numeric" autocomplete="off" placeholder="••••••">
+  <div class="err" id="gateErr" style="margin-top:8px"></div>
+  <button id="gateOk">Entrar</button>
+</div></div>
 <div class="toast" id="toast"></div>
 
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
@@ -268,6 +283,8 @@ const FIREBASE_CONFIG={
 };
 // Usuario editor creado en Authentication (la contraseña es el código de edición)
 const EDITOR_EMAIL="editor@calendario-ux.app";
+// Usuario lector (la contraseña es el código de vista)
+const VIEWER_EMAIL="lector@calendario-ux.app";
 
 firebase.initializeApp(FIREBASE_CONFIG);
 const auth=firebase.auth();
@@ -612,13 +629,20 @@ $('importFile').onchange=e=>{const f=e.target.files[0];if(!f)return;const rd=new
 
 /* ---------- modo edición ---------- */
 function setEdit(on){editMode=on;document.body.classList.toggle('ro',!on);if(S)renderAll()}
+let viewCode=null,unsub=null;
 $('unlockBtn').onclick=()=>{$('codeIn').value='';$('codeErr').textContent='';$('ovCode').classList.add('show');setTimeout(()=>$('codeIn').focus(),30)};
 $('codeOk').onclick=()=>{const c=$('codeIn').value.trim();if(!c)return;$('codeErr').textContent='Verificando…';
   auth.signInWithEmailAndPassword(EDITOR_EMAIL,c).then(()=>{close('ovCode');toast('Modo edición activado')})
   .catch(e=>{$('codeErr').textContent=e.code==='auth/too-many-requests'?'Demasiados intentos. Probá en unos minutos.':'Código incorrecto.';$('codeIn').select()})};
 $('codeIn').addEventListener('keydown',e=>{if(e.key==='Enter')$('codeOk').click()});
 $('codeCancel').onclick=()=>close('ovCode');
-$('lockBtn').onclick=()=>{auth.signOut().then(()=>toast('Volviste a solo lectura'))};
+$('lockBtn').onclick=()=>{(viewCode?auth.signInWithEmailAndPassword(VIEWER_EMAIL,viewCode):auth.signOut()).then(()=>toast(viewCode?'Volviste a solo lectura':'Sesión cerrada'))};
+$('logoutBtn').onclick=()=>{viewCode=null;auth.signOut()};
+function gateTry(){const c=$('gateIn').value.trim();if(!c)return;$('gateErr').textContent='Verificando…';
+  auth.signInWithEmailAndPassword(VIEWER_EMAIL,c).then(()=>{viewCode=c;$('gateIn').value='';$('gateErr').textContent=''})
+  .catch(e=>{$('gateErr').textContent=e.code==='auth/too-many-requests'?'Demasiados intentos. Probá en unos minutos.':'Código incorrecto.';$('gateIn').select()})}
+$('gateOk').onclick=gateTry;
+$('gateIn').addEventListener('keydown',e=>{if(e.key==='Enter')gateTry()});
 $('newBtn').onclick=()=>openTask(null);
 $('newRelBtn').onclick=()=>openRel(null);
 $('undoBtn').onclick=undo;
@@ -637,12 +661,26 @@ function renderAll(flash,keepCfg){renderBar();renderCal();renderTray();renderCat
 const ml=monthList();ui.month=ml.includes(TODAY.slice(0,7))?TODAY.slice(0,7):ml[0];
 $('undoBtn').disabled=true;
 $('cal').innerHTML='<div class="note" style="padding:40px;text-align:center">Cargando calendario…</div>';
-auth.onAuthStateChanged(u=>setEdit(!!u));
-DOC.onSnapshot(snap=>{
-  if(snap.metadata.hasPendingWrites)return; // cambio propio todavía en camino
-  S=normalize(snap.exists&&snap.data().v===3?snap.data():fresh());
-  renderAll();
-},err=>{console.error(err);$('cal').innerHTML=`<div class="note" style="padding:40px;text-align:center">No se pudo cargar el calendario (${esc(err.code||err.message)}).</div>`});
+function subscribe(){
+  unsub=DOC.onSnapshot(snap=>{
+    if(snap.metadata.hasPendingWrites)return; // cambio propio todavía en camino
+    S=normalize(snap.exists&&snap.data().v===3?snap.data():fresh());
+    renderAll();
+  },err=>{console.error(err);unsub=null;$('cal').innerHTML=`<div class="note" style="padding:40px;text-align:center">No se pudo cargar el calendario (${esc(err.code||err.message)}).</div>`});
+}
+auth.onAuthStateChanged(u=>{
+  if(!u){
+    if(unsub){unsub();unsub=null}
+    S=null;setEdit(false);
+    $('cal').innerHTML='';$('tray').innerHTML='';$('cats').innerHTML='';$('months').innerHTML='';$('filters').innerHTML='';$('legend').innerHTML='';
+    document.querySelectorAll('.ov.show').forEach(o=>close(o.id));
+    $('gate').classList.add('show');setTimeout(()=>$('gateIn').focus(),30);
+    return;
+  }
+  $('gate').classList.remove('show');
+  setEdit(u.email===EDITOR_EMAIL);
+  if(!unsub)subscribe();
+});
 </script>
 </body>
 </html>
